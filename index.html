@@ -2135,16 +2135,15 @@ async function syPull(apply){
   const j=await r.json();
   SY.sha=j.sha;
   let o=null; try{ o=JSON.parse(syB64ToText(j.content)); }catch(err){}
-  if(apply && o && !SY.dirty && o.at && o.at!==SY.at){
-    TASKS=(o.tasks&&typeof o.tasks==="object")?o.tasks:{};
-    DONE =(o.done &&typeof o.done ==="object")?o.done :{};
-    PLAN =(o.plan &&typeof o.plan ==="object")?o.plan :{};
-    try{ _saveAllRaw(); }catch(err){}
-    try{ _savePlanRaw(); }catch(err){}
-    SY.at=o.at||""; sySave();
-    syRedraw();
-    sySay("已从云端更新 · "+new Date().toLocaleTimeString(),"ok");
-    return o;
+  if(apply && o){
+    const m=syMergeSnap(o);
+    const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{}});
+    syApplySnap(m);
+    SY.at=o.at||SY.at;
+    if(!same){ sySave(); await syPush(); return m; }
+    sySave();
+    sySay("已同步 · "+new Date().toLocaleTimeString(),"ok");
+    return m;
   }
   return o;
 }
@@ -2178,14 +2177,69 @@ function syTouch(){
 function syHasLocal(){
   return (Object.keys(TASKS||{}).length>0) || (Object.keys(DONE||{}).length>0) || (Object.keys(PLAN||{}).length>0);
 }
+/* ---- 合并：两边的数据取并集，谁也不会被覆盖掉 ---- */
+function syUArr(a,b){
+  const out=(a||[]).slice();
+  (b||[]).forEach(function(x){
+    const s=JSON.stringify(x);
+    let has=false;
+    for(let i=0;i<out.length;i++){ if(JSON.stringify(out[i])===s){ has=true; break; } }
+    if(!has) out.push(x);
+  });
+  return out;
+}
+function syMergeTaskList(cloud,local){
+  const out=(cloud||[]).slice();
+  (local||[]).forEach(function(it){
+    if(!it) return;
+    let idx=-1;
+    for(let i=0;i<out.length;i++){ if(out[i] && it.id && out[i].id===it.id){ idx=i; break; } }
+    if(idx<0) out.push(it); else out[idx]=it;   /* 同一个 id：本机的新内容优先 */
+  });
+  return out;
+}
+function syDeepMerge(a,b){
+  if(Array.isArray(a)||Array.isArray(b)) return syUArr(a||[],b||[]);
+  if(a&&b&&typeof a==="object"&&typeof b==="object"){
+    const out={};
+    for(const k in a) out[k]=a[k];
+    for(const k in b) out[k]=(k in out)?syDeepMerge(out[k],b[k]):b[k];
+    return out;
+  }
+  return (b===undefined||b===null)?a:b;
+}
+function syMergeSnap(o){
+  const t={};
+  for(const k in (o.tasks||{})) t[k]=o.tasks[k];
+  for(const k in (TASKS||{})) t[k]=syMergeTaskList(t[k],TASKS[k]);
+  const d={};
+  for(const k in (o.done||{})) if(o.done[k]) d[k]=1;
+  for(const k in (DONE||{})) if(DONE[k]) d[k]=1;
+  const p=syDeepMerge(o.plan||{},PLAN||{});
+  return {app:"万年历",v:3,at:new Date().toISOString(),tasks:t,done:d,plan:p};
+}
+function syApplySnap(o,msg){
+  TASKS=(o.tasks&&typeof o.tasks==="object")?o.tasks:{};
+  DONE =(o.done &&typeof o.done ==="object")?o.done :{};
+  PLAN =(o.plan &&typeof o.plan ==="object")?o.plan :{};
+  try{ _saveAllRaw(); }catch(err){}
+  try{ _savePlanRaw(); }catch(err){}
+  syRedraw();
+  if(msg) sySay(msg,"ok");
+}
 async function syConnect(){
   const o=await syPull(false);
-  if(o && !syHasLocal()){
-    SY.dirty=false;
-    await syPull(true);
-    sySay("已从云端读取 · "+new Date().toLocaleTimeString(),"ok");
+  if(!o){ await syPush(); return; }
+  const m=syMergeSnap(o);
+  const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{}});
+  if(same){
+    syApplySnap(m);
+    SY.at=o.at||SY.at; sySave();
+    sySay("已同步 · "+new Date().toLocaleTimeString()+"（云端与本机一致）","ok");
     return;
   }
+  syApplySnap(m);
+  sySay("正在合并 "+SY.repo+" …","");
   await syPush();
 }
 function syRedraw(){
