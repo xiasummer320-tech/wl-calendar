@@ -180,6 +180,18 @@ body.zooming{cursor:ns-resize;user-select:none}
 .dt:hover{border-color:var(--accent);color:var(--accent)}
 .dt-hint{font-size:11px;color:#6f8b84}
 .note b{color:var(--accent)}
+.sybar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;padding-top:9px;border-top:1px dashed #dfe7e4}
+.sy-status{font-size:11px;color:#6f8b84}
+.sy-status.ok{color:#0f766e}
+.sy-status.err{color:#c23a2e}
+.sy-form{display:none;gap:7px;flex-wrap:wrap;align-items:center;width:100%;margin-top:2px}
+.sy-form.on{display:flex}
+.sy-in{flex:1 1 130px;min-width:110px;padding:5px 9px;border:1px solid #cfe0db;border-radius:8px;font-size:12px;font-family:inherit;color:var(--ink);background:#fff}
+.sy-in:focus{outline:none;border-color:var(--accent)}
+@media(max-width:560px){
+  .sy-in{font-size:16px} /* 防止 iPhone 聚焦时自动放大 */
+  .sy-status{font-size:10px}
+}
 
 /* ===== 手机（iPhone / 安卓）：单列 + 大触控 + 刘海安全区 ===== */
 @media(max-width:560px){
@@ -456,6 +468,17 @@ body.zooming{cursor:ns-resize;user-select:none}
       <button class="dt" id="btnRestore" title="从备份文件恢复（会覆盖当前数据）">恢复数据</button>
       <input type="file" id="fileRestore" accept="application/json,.json" hidden>
       <span class="dt-hint">换电脑、换浏览器、或改用桌面版 exe 时，用这两个按钮搬数据。</span>
+    </div>
+    <div class="sybar no-shot">
+      <button class="dt" id="syToggle" title="开启后，电脑和手机共用 GitHub 私有仓库里的同一份数据">开启云同步</button>
+      <span class="sy-status" id="syStatus">未开启（数据只在本机）</span>
+      <div class="sy-form" id="syForm">
+        <input class="sy-in" id="syRepo" placeholder="仓库：用户名/仓库名" autocomplete="off" spellcheck="false">
+        <input class="sy-in" id="syToken" placeholder="访问令牌（只读这一个私有仓库）" type="password" autocomplete="off">
+        <button class="dt" id="sySave">保存并连接</button>
+        <button class="dt" id="syPaste">粘贴上次的配置</button>
+        <button class="dt" id="syOff">断开</button>
+      </div>
     </div>
   </div>
   </div><!-- /col-main -->
@@ -2058,6 +2081,163 @@ try{
     window.addEventListener("load",function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); });
   }
 }catch(err){}
+
+/* ============ 云同步：数据存到 GitHub 私有仓库的 data.json ============ */
+const SYKEY="cal2027_sync";
+const SYFILE="data.json";
+let SY={on:false,repo:"",token:"",sha:null,at:"",dirty:false,pushing:false,timer:null,timer2:null};
+const _saveAllRaw=saveAll, _savePlanRaw=savePlan;
+saveAll=function(){ _saveAllRaw(); syTouch(); };
+savePlan=function(){ _savePlanRaw(); syTouch(); };
+
+function syBy(id){ return document.getElementById(id); }
+function sySay(msg,cls){ const el=syBy("syStatus"); if(el){ el.textContent=msg; el.className="sy-status"+(cls?" "+cls:""); } }
+function syLoad(){
+  try{
+    const raw=localStorage.getItem(SYKEY);
+    if(raw){ const o=JSON.parse(raw)||{}; SY.on=!!o.on; SY.repo=o.repo||""; SY.token=o.token||""; SY.at=o.at||""; }
+  }catch(err){}
+}
+function sySave(){
+  try{ localStorage.setItem(SYKEY, JSON.stringify({on:SY.on,repo:SY.repo,token:SY.token,at:SY.at})); }catch(err){}
+}
+function syPaint(){
+  const tg=syBy("syToggle"), fm=syBy("syForm"), rp=syBy("syRepo"), tk=syBy("syToken");
+  if(tg) tg.textContent = SY.on ? "云同步：已开启" : "开启云同步";
+  if(fm) fm.className = "sy-form" + (SY.on ? "" : " on");
+  if(rp) rp.value = SY.repo || "";
+  if(tk) tk.value = SY.token || "";
+  if(!SY.on) sySay(SY.repo ? ("已关闭（上次连接 "+SY.repo+"）") : "未开启（数据只在本机）", "");
+}
+function syB64ToText(b64){
+  const bin=atob((b64||"").replace(/\s/g,""));
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+function syTextToB64(s){
+  const bytes=new TextEncoder().encode(s);
+  let bin=""; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function sySnap(){ return {app:"万年历",v:3,at:new Date().toISOString(),tasks:TASKS,done:DONE,plan:PLAN}; }
+function syUrl(withRef){ return "https://api.github.com/repos/"+SY.repo+"/contents/"+SYFILE+(withRef?"?ref=main":""); }
+async function syCall(method,body,withRef){
+  return await fetch(syUrl(withRef),{
+    method:method, cache:"no-store",
+    headers:{Authorization:"token "+SY.token,Accept:"application/vnd.github+json","Content-Type":"application/json"},
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
+async function syPull(apply){
+  const r=await syCall("GET",null,true);
+  if(r.status===404){ SY.sha=null; return null; }
+  if(!r.ok) throw new Error("读取 "+r.status);
+  const j=await r.json();
+  SY.sha=j.sha;
+  let o=null; try{ o=JSON.parse(syB64ToText(j.content)); }catch(err){}
+  if(apply && o && !SY.dirty && o.at && o.at!==SY.at){
+    TASKS=(o.tasks&&typeof o.tasks==="object")?o.tasks:{};
+    DONE =(o.done &&typeof o.done ==="object")?o.done :{};
+    PLAN =(o.plan &&typeof o.plan ==="object")?o.plan :{};
+    try{ _saveAllRaw(); }catch(err){}
+    try{ _savePlanRaw(); }catch(err){}
+    SY.at=o.at||""; sySave();
+    syRedraw();
+    sySay("已从云端更新 · "+new Date().toLocaleTimeString(),"ok");
+    return o;
+  }
+  return o;
+}
+async function syPush(){
+  if(!SY.on || !SY.repo || !SY.token) return;
+  if(SY.pushing) return;
+  SY.pushing=true;
+  try{
+    await syPull(false);                       // 先拿最新 sha，避免 409
+    const payload={message:"sync "+new Date().toISOString().slice(0,16),content:syTextToB64(JSON.stringify(sySnap())),branch:"main"};
+    if(SY.sha) payload.sha=SY.sha;
+    const r=await syCall("PUT",payload,false);
+    if(!r.ok) throw new Error("写入 "+r.status);
+    const j=await r.json();
+    SY.sha=(j.content&&j.content.sha)||SY.sha;
+    SY.at=JSON.parse(syB64ToText(j.content&&j.content.content? j.content.content : syTextToB64('{"at":""}'))).at||SY.at;
+    SY.dirty=false; sySave();
+    sySay("已同步 · "+new Date().toLocaleTimeString(),"ok");
+  }catch(err){
+    sySay("同步失败："+err.message+"（改动仍在本机）","err");
+  }finally{
+    SY.pushing=false;
+  }
+}
+function syTouch(){
+  if(!SY.on) return;
+  SY.dirty=true;
+  clearTimeout(SY.timer);
+  SY.timer=setTimeout(function(){ syPush(); },1600);
+}
+function syHasLocal(){
+  return (Object.keys(TASKS||{}).length>0) || (Object.keys(DONE||{}).length>0) || (Object.keys(PLAN||{}).length>0);
+}
+async function syConnect(){
+  const o=await syPull(false);
+  if(o && !syHasLocal()){
+    SY.dirty=false;
+    await syPull(true);
+    sySay("已从云端读取 · "+new Date().toLocaleTimeString(),"ok");
+    return;
+  }
+  await syPush();
+}
+function syRedraw(){
+  try{ rebuild(); }catch(err){}
+  try{ if(typeof view!=="undefined" && view==="year") renderYear(); else renderMonth(); }catch(err){}
+  try{ renderTodo(); }catch(err){}
+  try{ renderPlan(); }catch(err){}
+}
+function syInit(){
+  syLoad(); syPaint();
+  if(!SY.on || !SY.repo || !SY.token) return;
+  sySay("正在连接 "+SY.repo+" …","");
+  syConnect().catch(function(err){ sySay("连接失败："+err.message+"（数据仍在本机）","err"); });
+  clearInterval(SY.timer2);
+  SY.timer2=setInterval(function(){
+    if(document.hidden) return;
+    if(SY.pushing || SY.dirty) return;
+    syPull(true).then(function(o){ if(SY.at && o && o.at===SY.at) sySay("已同步 · "+new Date().toLocaleTimeString(),"ok"); }).catch(function(){});
+  },60000);
+}
+(function(){
+  syInit();
+  syBy("syToggle").addEventListener("click",function(){
+    const fm=syBy("syForm");
+    fm.className = "sy-form" + (fm.className.indexOf("on")>=0 ? " on" : "");
+  });
+  syBy("sySave").addEventListener("click",function(){
+    const repo=(syBy("syRepo").value||"").trim().replace(/^https?:\/\/github.com\//,"").replace(/\.git$/,"").replace(/\/+$/,"");
+    const token=(syBy("syToken").value||"").trim();
+    if(!/^[^\/\s]+\/[^\/\s]+$/.test(repo)){ sySay("仓库格式应像 用户名/wl-data","err"); return; }
+    if(token.length<20){ sySay("令牌看起来不对（太短）","err"); return; }
+    SY.on=true; SY.repo=repo; SY.token=token; SY.sha=null; SY.dirty=false; sySave();
+    sySay("正在连接 "+repo+" …","");
+    syConnect().then(function(){ syBy("syForm").className="sy-form"; })
+      .catch(function(err){ sySay("连接失败："+err.message,"err"); });
+  });
+  syBy("syOff").addEventListener("click",function(){
+    SY.on=false; SY.dirty=false; sySave(); syPaint();
+    clearInterval(SY.timer2);
+  });
+  syBy("syPaste").addEventListener("click",function(){
+    if(!navigator.clipboard || !navigator.clipboard.readText){ sySay("这个浏览器不支持读剪贴板，直接粘贴到输入框","err"); return; }
+    navigator.clipboard.readText().then(function(t){
+      const v=(t||"").trim();
+      if(!v){ sySay("剪贴板是空的","err"); return; }
+      if(v.indexOf("/")>0 && !syBy("syRepo").value){ syBy("syRepo").value=v; }
+      else { syBy("syToken").value=v; }
+      sySay("已粘贴，点「保存并连接」","");
+    }).catch(function(){ sySay("读剪贴板被拒绝，直接粘贴到输入框","err"); });
+  });
+})();
 </script>
 </body>
 </html>
