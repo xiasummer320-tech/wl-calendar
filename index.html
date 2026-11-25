@@ -184,8 +184,7 @@ body.zooming{cursor:ns-resize;user-select:none}
 .sy-status{font-size:11px;color:#6f8b84}
 .sy-status.ok{color:#0f766e}
 .sy-status.err{color:#c23a2e}
-.sy-form{display:none;gap:7px;flex-wrap:wrap;align-items:center;width:100%;margin-top:2px}
-.sy-form.on{display:flex}
+.sy-form{display:flex;gap:7px;flex-wrap:wrap;align-items:center;width:100%;margin-top:2px}
 .sy-in{flex:1 1 130px;min-width:110px;padding:5px 9px;border:1px solid #cfe0db;border-radius:8px;font-size:12px;font-family:inherit;color:var(--ink);background:#fff}
 .sy-in:focus{outline:none;border-color:var(--accent)}
 @media(max-width:560px){
@@ -470,14 +469,15 @@ body.zooming{cursor:ns-resize;user-select:none}
       <span class="dt-hint">换电脑、换浏览器、或改用桌面版 exe 时，用这两个按钮搬数据。</span>
     </div>
     <div class="sybar no-shot">
-      <button class="dt" id="syToggle" title="开启后，电脑和手机共用 GitHub 私有仓库里的同一份数据">开启云同步</button>
+      <button class="dt" id="syToggle" title="填写下面的仓库和令牌后点「保存并连接」；已连接时点这里可立即再同步一次">立即同步</button>
       <span class="sy-status" id="syStatus">未开启（数据只在本机）</span>
       <div class="sy-form" id="syForm">
         <input class="sy-in" id="syRepo" placeholder="仓库：用户名/仓库名" autocomplete="off" spellcheck="false">
         <input class="sy-in" id="syToken" placeholder="访问令牌（只读这一个私有仓库）" type="password" autocomplete="off">
         <button class="dt" id="sySave">保存并连接</button>
-        <button class="dt" id="syPaste">粘贴上次的配置</button>
+        <button class="dt" id="syPaste">粘贴剪贴板</button>
         <button class="dt" id="syOff">断开</button>
+        <button class="dt" id="syClear">清空设置</button>
       </div>
     </div>
   </div>
@@ -2102,12 +2102,11 @@ function sySave(){
   try{ localStorage.setItem(SYKEY, JSON.stringify({on:SY.on,repo:SY.repo,token:SY.token,at:SY.at})); }catch(err){}
 }
 function syPaint(){
-  const tg=syBy("syToggle"), fm=syBy("syForm"), rp=syBy("syRepo"), tk=syBy("syToken");
-  if(tg) tg.textContent = SY.on ? "云同步：已开启" : "开启云同步";
-  if(fm) fm.className = "sy-form" + (SY.on ? "" : " on");
+  const tg=syBy("syToggle"), rp=syBy("syRepo"), tk=syBy("syToken");
+  if(tg) tg.textContent = "立即同步";
   if(rp) rp.value = SY.repo || "";
   if(tk) tk.value = SY.token || "";
-  if(!SY.on) sySay(SY.repo ? ("已关闭（上次连接 "+SY.repo+"）") : "未开启（数据只在本机）", "");
+  if(!SY.on) sySay(SY.repo ? ("已断开（上次连接 "+SY.repo+"，改完令牌再点保存）") : "未开启（数据只在本机）", "");
 }
 function syB64ToText(b64){
   const bin=atob((b64||"").replace(/\s/g,""));
@@ -2209,23 +2208,32 @@ function syInit(){
 }
 (function(){
   syInit();
+  if(!syBy("syToggle")) return;
   syBy("syToggle").addEventListener("click",function(){
-    const fm=syBy("syForm");
-    fm.className = "sy-form" + (fm.className.indexOf("on")>=0 ? " on" : "");
+    if(!SY.on || !SY.repo || !SY.token){ sySay("先把仓库和令牌填好，再点「保存并连接」",""); syBy("syRepo").focus(); return; }
+    sySay("正在同步 "+SY.repo+" …","");
+    syConnect().catch(function(err){ sySay("同步失败："+err.message,"err"); });
   });
   syBy("sySave").addEventListener("click",function(){
     const repo=(syBy("syRepo").value||"").trim().replace(/^https?:\/\/github.com\//,"").replace(/\.git$/,"").replace(/\/+$/,"");
     const token=(syBy("syToken").value||"").trim();
-    if(!/^[^\/\s]+\/[^\/\s]+$/.test(repo)){ sySay("仓库格式应像 用户名/wl-data","err"); return; }
-    if(token.length<20){ sySay("令牌看起来不对（太短）","err"); return; }
+    if(!/^[^\/\s]+\/[^\/\s]+$/.test(repo)){ sySay("仓库要填成 用户名/wl-data 这种格式","err"); return; }
+    if(token.length<20){ sySay("令牌看起来不对（太短），整串粘进来","err"); return; }
     SY.on=true; SY.repo=repo; SY.token=token; SY.sha=null; SY.dirty=false; sySave();
     sySay("正在连接 "+repo+" …","");
-    syConnect().then(function(){ syBy("syForm").className="sy-form"; })
-      .catch(function(err){ sySay("连接失败："+err.message,"err"); });
+    syConnect().catch(function(err){ sySay("连接失败："+err.message,"err"); });
   });
   syBy("syOff").addEventListener("click",function(){
     SY.on=false; SY.dirty=false; sySave(); syPaint();
     clearInterval(SY.timer2);
+    sySay("已断开，数据只在本机（令牌已保留，可再点保存并连接）","");
+  });
+  syBy("syClear").addEventListener("click",function(){
+    SY.on=false; SY.dirty=false; SY.repo=""; SY.token=""; SY.at=""; SY.sha=null;
+    try{ localStorage.removeItem(SYKEY); }catch(err){}
+    syBy("syRepo").value=""; syBy("syToken").value="";
+    clearInterval(SY.timer2);
+    sySay("已清空同步设置，可重新填写","");
   });
   syBy("syPaste").addEventListener("click",function(){
     if(!navigator.clipboard || !navigator.clipboard.readText){ sySay("这个浏览器不支持读剪贴板，直接粘贴到输入框","err"); return; }
