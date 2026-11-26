@@ -930,6 +930,13 @@ function dayKey(m,d){ return curY+"-"+pad2(m)+"-"+pad2(d); }
 function mdKey(m,d){ return pad2(m)+"-"+pad2(d); }
 /* 实例索引：把重复规则展开成“每天有哪些任务” */
 let INST={};
+const REP_EXPIRE=3;   /* 重复任务某一次到期后，超过这么多天还没勾完成，就自动清掉这一次（后面的不动） */
+function occPassedDays(k){
+  const n=new Date();
+  const today=new Date(n.getFullYear(),n.getMonth(),n.getDate());
+  const d=mkDate(k);
+  return Math.round((today.getTime()-d.getTime())/864e5);
+}
 function rebuild(){
   INST={};
   for(const sk in TASKS){
@@ -942,6 +949,8 @@ function rebuild(){
       const occ=new Date(base.getFullYear(),base.getMonth(),base.getDate());
       const pushIt=(c)=>{
         const k=dateKey(c);
+        /* 重复任务：这一次过期 REP_EXPIRE 天仍未完成 → 直接不生成（等于删掉，后续实例不受影响） */
+        if(kind!=="none" && !DONE[k+"#"+t.id] && occPassedDays(k)>=REP_EXPIRE) return;
         (INST[k]||(INST[k]=[])).push({
           id:t.id, text:t.text, start:sk, occ:k,
           done:!!DONE[k+"#"+t.id],
@@ -1123,7 +1132,7 @@ function tdOcc(start,id){
   const today=todayKeyOfYear(), keys=[];
   for(const k in INST){ if((INST[k]||[]).some(i=>i.id===id && i.start===start)) keys.push(k); }
   keys.sort();
-  if(!keys.length) return {key:start, done:false};
+  if(!keys.length) return null;   /* 这一次（以及所有旧实例）都已按过期规则清掉 → 待办里不再显示 */
   let pick=null;
   for(let i=0;i<keys.length;i++){ if(keys[i]>=today && !DONE[keys[i]+"#"+id]){ pick=keys[i]; break; } }
   if(!pick) pick=keys[keys.length-1];
@@ -1133,7 +1142,7 @@ function renderTodo(){
   const list=document.getElementById("tdList"); if(!list) return;
   const rows=[];
   Object.keys(TASKS).forEach(start=>{
-    (TASKS[start]||[]).forEach(t=>{ rows.push({start:start, t:t, o:tdOcc(start,t.id)}); });
+    (TASKS[start]||[]).forEach(t=>{ const o=tdOcc(start,t.id); if(o) rows.push({start:start, t:t, o:o}); });
   });
   const sub=document.getElementById("tdSub");
   if(sub) sub.textContent=rows.filter(r=>!r.o.done).length+" 项未完成";
