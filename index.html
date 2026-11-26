@@ -485,6 +485,7 @@ body.zooming{cursor:ns-resize;user-select:none}
         <button class="dt" id="syPaste">粘贴剪贴板</button>
         <button class="dt" id="syOff">断开</button>
         <button class="dt" id="syClear">清空设置</button>
+        <button class="dt" id="syExport" title="生成一份把仓库名和令牌写进文件里的副本；存到有道云笔记等处，之后在任何地方打开都会自动连上（文件含令牌，别外发）">导出带配置的副本</button>
       </div>
     </div>
   </div>
@@ -695,6 +696,9 @@ body.zooming{cursor:ns-resize;user-select:none}
     </div>
   </div>
 </aside>
+
+<!-- 内嵌配置占位：导出“带配置的副本”时，这段会被替换成真实仓库名+令牌 -->
+<script id="syPre">window.SY_PRE=null;</script>
 
 <script>
 "use strict";
@@ -2182,6 +2186,13 @@ function syLoad(){
     const raw=localStorage.getItem(SYKEY);
     if(raw){ const o=JSON.parse(raw)||{}; SY.on=!!o.on; SY.repo=o.repo||""; SY.token=o.token||""; SY.at=o.at||""; }
   }catch(err){}
+  /* 本机没有配置，但文件里内嵌了配置（从笔记/临时链接打开、localStorage 被清空时）→ 直接用内嵌这份 */
+  try{
+    if((!SY.repo || !SY.token) && window.SY_PRE && SY_PRE.repo && SY_PRE.token){
+      SY.repo=SY_PRE.repo; SY.token=SY_PRE.token; SY.on=true; SY.at="";
+      sySave();
+    }
+  }catch(err){}
 }
 function sySave(){
   try{ localStorage.setItem(SYKEY, JSON.stringify({on:SY.on,repo:SY.repo,token:SY.token,at:SY.at})); }catch(err){}
@@ -2346,6 +2357,31 @@ function syApplySnap(o,msg){
   syRedraw();
   if(msg) sySay(msg,"ok");
 }
+/* 生成“带配置的副本”：把仓库名和令牌写进文件里的占位脚本，任何地方打开都自动连上 */
+function syExportHtml(){
+  if(!SY.repo || !SY.token) throw new Error("先把仓库和令牌填好并保存，再导出");
+  const clone=document.documentElement.cloneNode(true);
+  const pre=clone.querySelector("#syPre");
+  if(!pre) throw new Error("页面缺少配置占位（请用最新版页面导出）");
+  pre.textContent="window.SY_PRE="+JSON.stringify({repo:SY.repo,token:SY.token})+" ;";
+  const rp=clone.querySelector("#syRepo"), tk=clone.querySelector("#syToken");
+  if(rp) rp.removeAttribute("value");
+  if(tk) tk.removeAttribute("value");
+  return "<!DOCTYPE html>\n"+clone.outerHTML;
+}
+function syExportCfg(){
+  try{
+    const html=syExportHtml();
+    const name="万年历-带配置-"+new Date().toISOString().slice(0,10)+".html";
+    const blob=new Blob([html],{type:"text/html;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); if(a.parentNode) a.remove(); },4000);
+    sySay("已导出 "+name+"（文件里含你的令牌，别外发）；存进有道云笔记后在任何地方打开都会自动连上","ok");
+  }catch(err){ sySay("导出失败："+err.message,"err"); }
+}
 async function syConnect(){
   const o=await syPull(false);
   if(!o){ await syPush(); return; }
@@ -2408,6 +2444,8 @@ function syInit(){
     clearInterval(SY.timer2);
     sySay("已清空同步设置，可重新填写","");
   });
+  const exBtn=syBy("syExport");
+  if(exBtn) exBtn.addEventListener("click",function(){ syExportCfg(); });
   syBy("syPaste").addEventListener("click",function(){
     if(!navigator.clipboard || !navigator.clipboard.readText){ sySay("这个浏览器不支持读剪贴板，直接粘贴到输入框","err"); return; }
     navigator.clipboard.readText().then(function(t){
