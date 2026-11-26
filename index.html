@@ -79,6 +79,13 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 .td-del{font-size:14px;line-height:1}
 .td-del:hover{color:var(--holiday);background:var(--holiday-soft)}
 .td-empty{font-size:12px;color:var(--muted);text-align:center;padding:18px 4px}
+/* 已过期分组：过期但还没勾完成的任务单独列一段 */
+.td-overdue{flex:none;max-height:190px;overflow:auto;margin:0 0 6px;border:1px solid #f0d3d3;border-radius:8px;background:#fffbfb;padding:5px 7px}
+.td-ovhead{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#c22;padding:2px 0 4px}
+.td-ovhead .td-ovsub{font-weight:400;color:#b98;font-size:11px}
+.td-exp{display:inline-block;color:#c22;font-weight:700;font-size:11px;border:1px solid #e7b1b1;background:#fff2f2;border-radius:4px;padding:0 4px;margin-left:6px;line-height:1.5;white-space:nowrap}
+.td-overdue .td-row{border-bottom:1px solid #fbeaea;padding:6px 2px}
+.td-overdue .td-text{color:#8a3a3a}
 .td-add{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:6px}
 #tdOptBox .opt-row label{width:46px}
 #tdOptBox .opt-title{white-space:normal;line-height:1.5}
@@ -492,6 +499,10 @@ body.zooming{cursor:ns-resize;user-select:none}
         <button class="td-tab" data-f="open">未完成</button>
       </div>
     </div>
+    <div class="td-overdue" id="tdOverdue" hidden>
+      <div class="td-ovhead">已过期<span class="td-ovsub" id="tdOvSub"></span></div>
+      <div class="td-ovlist" id="tdOvList"></div>
+    </div>
     <div class="td-list" id="tdList"></div>
     <div class="td-add">
       <div class="td-addrow">
@@ -850,6 +861,7 @@ function loadGone(){ try{ const r=localStorage.getItem(GKEY); if(r) GONE=JSON.pa
 function saveGone(){ try{ localStorage.setItem(GKEY,JSON.stringify(GONE)); }catch(e){} }
 function markGone(k){ GONE[k]=new Date().toISOString(); saveGone(); }
 function unmarkGone(k){ if(k in GONE){ delete GONE[k]; saveGone(); } }
+loadGone();
 function saveAll(){
   try{ localStorage.setItem(TKEY,JSON.stringify(TASKS)); localStorage.setItem(DKEY,JSON.stringify(DONE)); }catch(e){}
 }
@@ -930,7 +942,7 @@ function dayKey(m,d){ return curY+"-"+pad2(m)+"-"+pad2(d); }
 function mdKey(m,d){ return pad2(m)+"-"+pad2(d); }
 /* 实例索引：把重复规则展开成“每天有哪些任务” */
 let INST={};
-const REP_EXPIRE=3;   /* 重复任务某一次到期后，超过这么多天还没勾完成，就自动清掉这一次（后面的不动） */
+const REP_EXPIRE=5;   /* 重复任务某一次到期后，超过这么多天还没勾完成，就自动清掉这一次（后面的不动） */
 function occPassedDays(k){
   const n=new Date();
   const today=new Date(n.getFullYear(),n.getMonth(),n.getDate());
@@ -949,6 +961,8 @@ function rebuild(){
       const occ=new Date(base.getFullYear(),base.getMonth(),base.getDate());
       const pushIt=(c)=>{
         const k=dateKey(c);
+        /* 手动删掉了这一次（只删单次实例，不影响整组重复） */
+        if(GONE["o|"+k+"|"+t.id]) return;
         /* 重复任务：这一次过期 REP_EXPIRE 天仍未完成 → 直接不生成（等于删掉，后续实例不受影响） */
         if(kind!=="none" && !DONE[k+"#"+t.id] && occPassedDays(k)>=REP_EXPIRE) return;
         (INST[k]||(INST[k]=[])).push({
@@ -1140,10 +1154,39 @@ function tdOcc(start,id){
 }
 function renderTodo(){
   const list=document.getElementById("tdList"); if(!list) return;
+  const today=todayKeyOfYear();
   const rows=[];
   Object.keys(TASKS).forEach(start=>{
     (TASKS[start]||[]).forEach(t=>{ const o=tdOcc(start,t.id); if(o) rows.push({start:start, t:t, o:o}); });
   });
+  /* 已过期：到期日早于今天、还没勾完成的实例（重复任务的旧实例 + 单次任务）单独列一段 */
+  const ovr=[];
+  for(const k in INST){
+    if(k>=today) continue;
+    (INST[k]||[]).forEach(i=>{ if(!i.done) ovr.push(i); });
+  }
+  ovr.sort((a,b)=> a.occ===b.occ ? (a.text<b.text?-1:1) : (a.occ<b.occ?1:-1));
+  const ovBox=document.getElementById("tdOverdue"), ovList=document.getElementById("tdOvList");
+  if(ovBox && ovList){
+    if(ovr.length){
+      ovBox.hidden=false;
+      ovList.innerHTML=ovr.map(i=>{
+        const dateTxt=(i.occ.slice(0,4)!==String(curY) ? i.occ.slice(0,4)+"年 " : "")+i.occ.slice(5,7)+"/"+i.occ.slice(8,10);
+        const rk=(i.rep||{}).kind||"none";
+        const meta=dateTxt+(rk!=="none" ? " · "+repLabel({rep:i.rep,until:i.until}) : "");
+        const hasCol=!!i.color;
+        return '<div class="td-row"'+(hasCol?' style="--tc:'+i.color+'"':'')+' data-start="'+i.start+'" data-id="'+i.id+'" data-occ="'+i.occ+'">'
+          + '<button class="td-chk" aria-label="标记完成" title="标记完成">'+CHECKSM+'</button>'
+          + '<div class="td-main"><div class="td-text">'+esc(i.text)+'<span class="td-exp">已过期</span></div>'
+          + '<div class="td-meta">'+esc(meta)+'</div></div>'
+          + '<button class="td-del" title="'+(rk!=="none"?"删除这一次（不影响后面）":"删除这条任务")+'">&times;</button>'
+          + '</div>';
+      }).join("");
+      const sub=document.getElementById("tdOvSub"); if(sub) sub.textContent=ovr.length+" 条";
+    }else{
+      ovBox.hidden=true; ovList.innerHTML="";
+    }
+  }
   const sub=document.getElementById("tdSub");
   if(sub) sub.textContent=rows.filter(r=>!r.o.done).length+" 项未完成";
   rows.sort((a,b)=>{
@@ -1151,7 +1194,9 @@ function renderTodo(){
     if(a.o.key!==b.o.key) return a.o.key<b.o.key?-1:1;
     return a.t.text<b.t.text?-1:1;
   });
-  const show=(tdFilter==="open") ? rows.filter(r=>!r.o.done) : rows;
+  /* 过期未完成的已经放进“已过期”那一段，这里不再重复显示 */
+  const rest=rows.filter(r=> !(r.o.key<today && !r.o.done) );
+  const show=(tdFilter==="open") ? rest.filter(r=>!r.o.done) : rest;
   if(!show.length){
     list.innerHTML='<div class="td-empty">'+(tdFilter==="open" ? "没有未完成的待办，下面加一条吧。" : "还没有任何任务。")+'</div>';
     return;
@@ -1285,6 +1330,24 @@ document.getElementById("tdList").addEventListener("click",e=>{
     openPanel(occ);
   }
 });
+
+/* 已过期分组里的操作：勾完成 / 删掉这一次 / 打开当天 */
+(function(){
+  const el=document.getElementById("tdOvList"); if(!el) return;
+  el.addEventListener("click",e=>{
+    const row=e.target.closest(".td-row"); if(!row) return;
+    const start=row.dataset.start, id=row.dataset.id, occ=row.dataset.occ;
+    if(e.target.closest(".td-chk")){ toggleInst(occ,id); tdSync(); return; }
+    if(e.target.closest(".td-del")){
+      const t=(TASKS[start]||[]).find(x=>x.id===id);
+      const rk=t?(((t.rep||{}).kind)||"none"):"none";
+      if(rk!=="none"){ markGone("o|"+occ+"|"+id); saveAll(); }   /* 只删这一次，后面照旧 */
+      else{ removeTask(start,id); }
+      tdSync(); return;
+    }
+    if(e.target.closest(".td-main")){ openPanel(occ); }
+  });
+})();
 
 /* ============ 年度 / 月度计划（按年存放，独立数据，不进日历） ============ */
 const PKEY="cal2027_plan";
