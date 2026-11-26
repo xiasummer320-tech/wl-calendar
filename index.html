@@ -2205,9 +2205,10 @@ function syMergeTaskList(cloud,local){
   const out=(cloud||[]).slice();
   (local||[]).forEach(function(it){
     if(!it) return;
-    let idx=-1;
-    for(let i=0;i<out.length;i++){ if(out[i] && it.id && out[i].id===it.id){ idx=i; break; } }
-    if(idx<0) out.push(it); else out[idx]=it;   /* 同一个 id：本机的新内容优先 */
+    if(it.id){
+      for(let i=0;i<out.length;i++){ if(out[i] && out[i].id===it.id) return; }  /* 同 id 已在云端 → 以云端为准（改内容能传过去） */
+    }
+    out.push(it);
   });
   return out;
 }
