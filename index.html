@@ -843,6 +843,13 @@ const TKEY="cal2027_tasks";   // {"YYYY-MM-DD":[{id,text,rep:{kind,n}|{kind,days
 const DKEY="cal2027_done";    // {"YYYY-MM-DD#id":1} 按“某天某任务”记完成
 const MIG_Y=2027;             // 旧版只有月日，统一归到 2027 年
 let TASKS={}, DONE={};
+/* 删除标记（墓碑）：把“这一条被删了”也同步出去，别的设备才会跟着删 */
+const GKEY="cal2027_gone";
+let GONE={};
+function loadGone(){ try{ const r=localStorage.getItem(GKEY); if(r) GONE=JSON.parse(r)||{}; }catch(e){ GONE={}; } }
+function saveGone(){ try{ localStorage.setItem(GKEY,JSON.stringify(GONE)); }catch(e){} }
+function markGone(k){ GONE[k]=new Date().toISOString(); saveGone(); }
+function unmarkGone(k){ if(k in GONE){ delete GONE[k]; saveGone(); } }
 function saveAll(){
   try{ localStorage.setItem(TKEY,JSON.stringify(TASKS)); localStorage.setItem(DKEY,JSON.stringify(DONE)); }catch(e){}
 }
@@ -1020,6 +1027,7 @@ function moveTask(from,id,to){
   if(!a.length) delete TASKS[from];
   if(!TASKS[to]) TASKS[to]=[];
   TASKS[to].push(t);
+  markGone("t|"+from+"|"+id);
   /* 完成状态跟着搬：旧日期的标记清掉，原日期已完成则标记到新日期 */
   const wasDone=!!DONE[from+"#"+id];
   for(const k in DONE){ if(k.slice(-(id.length+1))==="#"+id) delete DONE[k]; }
@@ -1028,23 +1036,25 @@ function moveTask(from,id,to){
 }
 function toggleInst(occ,id){
   const k=occ+"#"+id;
-  if(DONE[k]) delete DONE[k]; else DONE[k]=1;
+  if(DONE[k]){ delete DONE[k]; markGone("d|"+k); }
+  else { DONE[k]=1; unmarkGone("d|"+k); }
   saveAll();
 }
 function removeTask(start,id){
   const a=TASKS[start]; if(!a) return;
   const i=a.findIndex(x=>x.id===id); if(i>-1) a.splice(i,1);
   if(!a.length) delete TASKS[start];
+  markGone("t|"+start+"|"+id);
   const suf="#"+id;
-  for(const k in DONE){ if(k.slice(-suf.length)===suf) delete DONE[k]; }
+  for(const k in DONE){ if(k.slice(-suf.length)===suf){ delete DONE[k]; markGone("d|"+k); } }
   saveAll();
 }
 function doneAllDay(m,d){
-  instanceAt(m,d).forEach(it=>{ DONE[it.occ+"#"+it.id]=1; });
+  instanceAt(m,d).forEach(it=>{ DONE[it.occ+"#"+it.id]=1; unmarkGone("d|"+it.occ+"#"+it.id); });
   saveAll();
 }
 function clearDoneDay(m,d){
-  instanceAt(m,d).forEach(it=>{ delete DONE[it.occ+"#"+it.id]; });
+  instanceAt(m,d).forEach(it=>{ delete DONE[it.occ+"#"+it.id]; markGone("d|"+it.occ+"#"+it.id); });
   saveAll();
 }
 function monthStats(m){
@@ -1298,6 +1308,9 @@ function planArr(scope){
   if(!Array.isArray(b.months[k])) b.months[k]=[];
   return b.months[k];
 }
+function planGoneKey(scope,id){
+  return scope==="year" ? "p|"+curY+"|year|"+id : "p|"+curY+"|month|"+curM+"|"+id;
+}
 let plFilter={year:"open", month:"open"};
 function planListHtml(scope){
   const state=plFilter[scope]||"open";
@@ -1366,7 +1379,7 @@ document.getElementById("planCol").addEventListener("click",e=>{
     }
     if(e.target.closest(".td-del")){
       const a=planArr(scope), i=a.findIndex(x=>x.id===id);
-      if(i>-1){ a.splice(i,1); savePlan(); renderPlan(); }
+      if(i>-1){ a.splice(i,1); markGone(planGoneKey(scope,id)); savePlan(); renderPlan(); }
       return;
     }
     if(e.target.closest(".td-text")){ startPlanEdit(row,scope,id); return; }
@@ -2119,7 +2132,7 @@ function syTextToB64(s){
   let bin=""; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
   return btoa(bin);
 }
-function sySnap(){ return {app:"万年历",v:3,at:new Date().toISOString(),tasks:TASKS,done:DONE,plan:PLAN}; }
+function sySnap(){ return {app:"万年历",v:3,at:new Date().toISOString(),tasks:TASKS,done:DONE,plan:PLAN,gone:GONE}; }
 function syUrl(withRef){ return "https://api.github.com/repos/"+SY.repo+"/contents/"+SYFILE+(withRef?"?ref=main":""); }
 async function syCall(method,body,withRef){
   return await fetch(syUrl(withRef),{
@@ -2137,7 +2150,7 @@ async function syPull(apply){
   let o=null; try{ o=JSON.parse(syB64ToText(j.content)); }catch(err){}
   if(apply && o){
     const m=syMergeSnap(o);
-    const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{}});
+    const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan,g:m.gone})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{},g:o.gone||{}});
     syApplySnap(m);
     SY.at=o.at||SY.at;
     if(!same){ sySave(); await syPush(); return m; }
@@ -2199,7 +2212,7 @@ function syMergeTaskList(cloud,local){
   return out;
 }
 function syDeepMerge(a,b){
-  if(Array.isArray(a)||Array.isArray(b)) return syUArr(a||[],b||[]);
+  if(Array.isArray(a)||Array.isArray(b)) return syMergeTaskList(a||[],b||[]);
   if(a&&b&&typeof a==="object"&&typeof b==="object"){
     const out={};
     for(const k in a) out[k]=a[k];
@@ -2208,7 +2221,37 @@ function syDeepMerge(a,b){
   }
   return (b===undefined||b===null)?a:b;
 }
+function syPruneGone(g){
+  const now=Date.now(), keep={};
+  for(const k in g){
+    const t=Date.parse(g[k]);
+    if(isNaN(t) || now-t<180*864e5) keep[k]=g[k];
+  }
+  return keep;
+}
+/* 把删除标记落实到数据上：被删的条目在两端都消失 */
+function syApplyTombstones(t,d,p,g){
+  for(const k in t){
+    t[k]=(t[k]||[]).filter(function(it){ return it && !(it.id && g["t|"+k+"|"+it.id]); });
+    if(!t[k].length) delete t[k];
+  }
+  for(const k in d){ if(g["d|"+k]) delete d[k]; }
+  if(p && p.y && typeof p.y==="object"){
+    for(const y in p.y){
+      const b=p.y[y]; if(!b) continue;
+      if(Array.isArray(b.year)) b.year=b.year.filter(function(it){ return it && !(it.id && g["p|"+y+"|year|"+it.id]); });
+      for(const m in (b.months||{})){
+        b.months[m]=(b.months[m]||[]).filter(function(it){ return it && !(it.id && g["p|"+y+"|month|"+m+"|"+it.id]); });
+      }
+    }
+  }
+  return {t:t,d:d,p:p};
+}
 function syMergeSnap(o){
+  const g={};
+  for(const k in (o.gone||{})) if(o.gone[k]) g[k]=o.gone[k];
+  for(const k in (GONE||{})) if(!g[k]) g[k]=GONE[k];
+  const gg=syPruneGone(g);
   const t={};
   for(const k in (o.tasks||{})) t[k]=o.tasks[k];
   for(const k in (TASKS||{})) t[k]=syMergeTaskList(t[k],TASKS[k]);
@@ -2216,14 +2259,17 @@ function syMergeSnap(o){
   for(const k in (o.done||{})) if(o.done[k]) d[k]=1;
   for(const k in (DONE||{})) if(DONE[k]) d[k]=1;
   const p=syDeepMerge(o.plan||{},PLAN||{});
-  return {app:"万年历",v:3,at:new Date().toISOString(),tasks:t,done:d,plan:p};
+  syApplyTombstones(t,d,p,gg);
+  return {app:"万年历",v:3,at:new Date().toISOString(),tasks:t,done:d,plan:p,gone:gg};
 }
 function syApplySnap(o,msg){
   TASKS=(o.tasks&&typeof o.tasks==="object")?o.tasks:{};
   DONE =(o.done &&typeof o.done ==="object")?o.done :{};
-  PLAN =(o.plan &&typeof o.plan ==="object")?o.plan :{};
+  PLAN =(o.plan &&typeof o.plan==="object"&&o.plan.y)?o.plan :{y:{}};
+  GONE =(o.gone &&typeof o.gone==="object")?o.gone :{};
   try{ _saveAllRaw(); }catch(err){}
   try{ _savePlanRaw(); }catch(err){}
+  saveGone();
   syRedraw();
   if(msg) sySay(msg,"ok");
 }
@@ -2231,7 +2277,7 @@ async function syConnect(){
   const o=await syPull(false);
   if(!o){ await syPush(); return; }
   const m=syMergeSnap(o);
-  const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{}});
+  const same=JSON.stringify({t:m.tasks,d:m.done,p:m.plan,g:m.gone})===JSON.stringify({t:o.tasks||{},d:o.done||{},p:o.plan||{},g:o.gone||{}});
   if(same){
     syApplySnap(m);
     SY.at=o.at||SY.at; sySave();
@@ -2249,7 +2295,7 @@ function syRedraw(){
   try{ renderPlan(); }catch(err){}
 }
 function syInit(){
-  syLoad(); syPaint();
+  loadGone(); syLoad(); syPaint();
   if(!SY.on || !SY.repo || !SY.token) return;
   sySay("正在连接 "+SY.repo+" …","");
   syConnect().catch(function(err){ sySay("连接失败："+err.message+"（数据仍在本机）","err"); });
