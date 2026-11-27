@@ -86,6 +86,13 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 .td-exp{display:inline-block;color:#c22;font-weight:700;font-size:11px;border:1px solid #e7b1b1;background:#fff2f2;border-radius:4px;padding:0 4px;margin-left:6px;line-height:1.5;white-space:nowrap}
 .td-overdue .td-row{border-bottom:1px solid #fbeaea;padding:6px 2px}
 .td-overdue .td-text{color:#8a3a3a}
+/* 页面内的选择弹层（不依赖系统 confirm，手机 WebView 里也能点） */
+.ask-mask{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;z-index:9998;padding:16px}
+.ask-box{background:#fff;border-radius:12px;padding:16px 18px;max-width:420px;width:100%;box-shadow:0 14px 44px rgba(0,0,0,.22)}
+.ask-t{font-size:14px;line-height:1.5;color:#1d1d1f;margin-bottom:14px}
+.ask-row{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.ask-row .dt{border:1px solid #dcdcdc;background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer}
+.ask-row .dt.ask-danger{border-color:#e2b4b4;color:#c22}
 .td-add{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:6px}
 #tdOptBox .opt-row label{width:46px}
 #tdOptBox .opt-title{white-space:normal;line-height:1.5}
@@ -865,6 +872,9 @@ function loadGone(){ try{ const r=localStorage.getItem(GKEY); if(r) GONE=JSON.pa
 function saveGone(){ try{ localStorage.setItem(GKEY,JSON.stringify(GONE)); }catch(e){} }
 function markGone(k){ GONE[k]=new Date().toISOString(); saveGone(); }
 function unmarkGone(k){ if(k in GONE){ delete GONE[k]; saveGone(); } }
+/* 勾完成的时间戳：云端合并时用来判断“勾”和“取消”谁更晚，避免两端互相覆盖 */
+function doneTs(v){ return (typeof v==="number" && v>=1e11) ? v : 0; }
+function markDone(k){ DONE[k]=Date.now(); unmarkGone("d|"+k); }
 loadGone();
 function saveAll(){
   try{ localStorage.setItem(TKEY,JSON.stringify(TASKS)); localStorage.setItem(DKEY,JSON.stringify(DONE)); }catch(e){}
@@ -1058,13 +1068,13 @@ function moveTask(from,id,to){
   /* 完成状态跟着搬：旧日期的标记清掉，原日期已完成则标记到新日期 */
   const wasDone=!!DONE[from+"#"+id];
   for(const k in DONE){ if(k.slice(-(id.length+1))==="#"+id) delete DONE[k]; }
-  if(wasDone) DONE[to+"#"+id]=1;
+  if(wasDone) markDone(to+"#"+id);
   saveAll();
 }
 function toggleInst(occ,id){
   const k=occ+"#"+id;
   if(DONE[k]){ delete DONE[k]; markGone("d|"+k); }
-  else { DONE[k]=1; unmarkGone("d|"+k); }
+  else { markDone(k); }
   saveAll();
 }
 function removeTask(start,id){
@@ -1077,7 +1087,7 @@ function removeTask(start,id){
   saveAll();
 }
 function doneAllDay(m,d){
-  instanceAt(m,d).forEach(it=>{ DONE[it.occ+"#"+it.id]=1; unmarkGone("d|"+it.occ+"#"+it.id); });
+  instanceAt(m,d).forEach(it=>{ markDone(it.occ+"#"+it.id); });
   saveAll();
 }
 function clearDoneDay(m,d){
@@ -1127,7 +1137,7 @@ function renderDayList(m,d){
       + (it.link?'<a class="tlink" href="'+esc(it.link)+'" target="_blank" rel="noopener noreferrer" title="打开链接：'+esc(it.link)+'">'+LINKICON+'<span>'+esc(linkLabel(it.link))+'</span></a>':'')
       + '</div>'
       + '<button class="tset" data-start="'+it.start+'" data-iid="'+it.id+'" aria-label="编辑任务" title="编辑任务（文字 / 颜色 / 重复 / 结束日）">'+GEAR+'</button>'
-      + '<button class="tdel" data-start="'+it.start+'" data-iid="'+it.id+'" aria-label="删除任务" title="删除任务">&times;</button>'
+      + '<button class="tdel" data-start="'+it.start+'" data-iid="'+it.id+'" data-occ="'+it.occ+'" aria-label="删除任务" title="删除任务">&times;</button>'
       + '</div>';
   }).join("");
 }
@@ -1224,6 +1234,25 @@ function renderTodo(){
 function tdSync(){
   rebuild(); renderMonth(); renderTodo();
   if(selKey){ const a=selKey.split("-").map(Number); renderDayList(a[1],a[2]); }
+}
+/* 页面内的选择弹层：替代系统 confirm（很多手机 WebView / 笔记 App 会屏蔽 confirm，点了像没反应） */
+function askChoice(title, items){
+  const mask=document.createElement("div"); mask.className="ask-mask";
+  const box=document.createElement("div"); box.className="ask-box";
+  const t=document.createElement("div"); t.className="ask-t"; t.textContent=title;
+  const row=document.createElement("div"); row.className="ask-row";
+  (items||[]).forEach(function(it){
+    const b=document.createElement("button");
+    b.className="dt"+(it.danger?" ask-danger":"");
+    b.textContent=it.label;
+    b.addEventListener("click",function(){ mask.remove(); try{ it.fn(); }catch(err){} });
+    row.appendChild(b);
+  });
+  const c=document.createElement("button"); c.className="dt"; c.textContent="取消";
+  c.addEventListener("click",function(){ mask.remove(); });
+  row.appendChild(c);
+  box.appendChild(t); box.appendChild(row); mask.appendChild(box);
+  document.body.appendChild(mask);
 }
 /* ---- ToDo 列里的“任务设置”（与详情面板同一套选项：日期/颜色/重复/链接） ---- */
 let qColorSel="", qWkSel=[];
@@ -1326,8 +1355,13 @@ document.getElementById("tdList").addEventListener("click",e=>{
     toggleInst(occ,id); tdSync();
   }else if(e.target.closest(".td-del")){
     const t=(TASKS[start]||[]).find(x=>x.id===id);
-    if(t && (t.rep||{}).kind!=="none" && !confirm("这是重复任务，删除后整组重复都会移除，确定删除？")) return;
-    removeTask(start,id); tdSync();
+    const rk=t?(((t.rep||{}).kind)||"none"):"none";
+    if(rk!=="none"){
+      askChoice("「"+((t&&t.text)||"这条任务")+"」是重复任务，删哪一部分？",[
+        {label:"只删这一次", fn:function(){ markGone("o|"+occ+"|"+id); saveAll(); tdSync(); }},
+        {label:"整组一起删", fn:function(){ removeTask(start,id); tdSync(); }}
+      ]);
+    } else { removeTask(start,id); tdSync(); }
   }else if(e.target.closest(".td-pen")){
     openPanel(occ); editTask(start,id);
   }else if(e.target.closest(".td-main")){
@@ -1673,10 +1707,16 @@ document.getElementById("tList").addEventListener("click",e=>{
   if(chk){
     toggleInst(chk.dataset.occ, chk.dataset.iid); refreshDay();
   }else if(del){
-    const start=del.dataset.start;
-    const t=(TASKS[start]||[]).find(x=>x.id===del.dataset.iid);
-    if(t && t.rep.kind!=="none" && !confirm("这是重复任务，删除后整组重复都会移除，确定删除？")) return;
-    removeTask(start, del.dataset.iid); refreshDay();
+    const start=del.dataset.start, id=del.dataset.iid;
+    const t=(TASKS[start]||[]).find(x=>x.id===id);
+    const rk=t?(((t.rep||{}).kind)||"none"):"none";
+    if(rk!=="none"){
+      const occ=del.dataset.occ||start;
+      askChoice("「"+((t&&t.text)||"这条任务")+"」是重复任务，删哪一部分？",[
+        {label:"只删这一次", fn:function(){ markGone("o|"+occ+"|"+id); saveAll(); refreshDay(); }},
+        {label:"整组一起删", fn:function(){ removeTask(start,id); refreshDay(); }}
+      ]);
+    } else { removeTask(start,id); refreshDay(); }
   }else if(set){
     editTask(set.dataset.start, set.dataset.iid);
   }
@@ -2319,7 +2359,7 @@ function syApplyTombstones(t,d,p,g){
     t[k]=(t[k]||[]).filter(function(it){ return it && !(it.id && g["t|"+k+"|"+it.id]); });
     if(!t[k].length) delete t[k];
   }
-  for(const k in d){ if(g["d|"+k]) delete d[k]; }
+  /* 勾选状态已在 syMergeDone 里按时间戳定胜负，这里不再按“删除标记”一刀切 */
   if(p && p.y && typeof p.y==="object"){
     for(const y in p.y){
       const b=p.y[y]; if(!b) continue;
@@ -2331,18 +2371,43 @@ function syApplyTombstones(t,d,p,g){
   }
   return {t:t,d:d,p:p};
 }
+/* 勾选状态按时间戳逐条比较：谁后勾/后取消就以谁为准，避免“勾了又被对端的旧标记抹掉” */
+function syDoneState(present, v, tomb){
+  if(present) return {on:true, t:doneTs(v)};
+  if(tomb) return {on:false, t:(Date.parse(tomb)||0)};
+  return null;
+}
+function syMergeDone(cloud, g){
+  const cd=(cloud&&cloud.done)||{}, cg=(cloud&&cloud.gone)||{};
+  const keys={};
+  for(const k in cd) if(cd[k]) keys[k]=1;
+  for(const k in DONE) if(DONE[k]) keys[k]=1;
+  for(const k in cg){ if(k.slice(0,2)==="d|") keys[k.slice(2)]=1; }
+  for(const k in GONE){ if(k.slice(0,2)==="d|") keys[k.slice(2)]=1; }
+  const d={}, addGone={};
+  for(const k in keys){
+    const c=syDoneState(!!cd[k], cd[k], cg["d|"+k]);
+    const l=syDoneState(!!DONE[k], DONE[k], (GONE||{})["d|"+k]);
+    let win;
+    if(!c) win=l; else if(!l) win=c; else win=(c.t>=l.t)?c:l;
+    if(!win) continue;
+    if(win.on) d[k]= win.t>=1e11 ? win.t : Date.now();
+    else addGone[k]= win.t ? new Date(win.t).toISOString() : new Date().toISOString();
+  }
+  return {d:d, gone:addGone};
+}
 function syMergeSnap(o){
   const g={};
   for(const k in (o.gone||{})) if(o.gone[k]) g[k]=o.gone[k];
   for(const k in (GONE||{})) if(!g[k]) g[k]=GONE[k];
-  const gg=syPruneGone(g);
   const t={};
   for(const k in (o.tasks||{})) t[k]=o.tasks[k];
   for(const k in (TASKS||{})) t[k]=syMergeTaskList(t[k],TASKS[k]);
-  const d={};
-  for(const k in (o.done||{})) if(o.done[k]) d[k]=1;
-  for(const k in (DONE||{})) if(DONE[k]) d[k]=1;
+  const dm=syMergeDone(o,g);
+  for(const k in dm.gone){ if(!g["d|"+k]) g["d|"+k]=dm.gone[k]; }
+  const gg=syPruneGone(g);
   const p=syDeepMerge(o.plan||{},PLAN||{});
+  const d=dm.d;
   syApplyTombstones(t,d,p,gg);
   return {app:"万年历",v:3,at:new Date().toISOString(),tasks:t,done:d,plan:p,gone:gg};
 }
@@ -2411,7 +2476,9 @@ function syInit(){
   clearInterval(SY.timer2);
   SY.timer2=setInterval(function(){
     if(document.hidden) return;
-    if(SY.pushing || SY.dirty) return;
+    if(SY.pushing) return;
+    /* 有改动没推出去（比如刚才网络抖了一下）→ 先补推，推完下一页再拉 */
+    if(SY.dirty){ syPush().catch(function(){}); return; }
     syPull(true).then(function(o){ if(SY.at && o && o.at===SY.at) sySay("已同步 · "+new Date().toLocaleTimeString(),"ok"); }).catch(function(){});
   },60000);
 }
